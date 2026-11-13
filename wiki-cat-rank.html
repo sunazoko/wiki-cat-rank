@@ -58,7 +58,8 @@ dl{margin:6px 0}dt{font-weight:600;margin-top:6px}dd{margin:0 0 0 1em;color:var(
     <label>カテゴリ上限／言語<input id="maxCats" type="number" min="1" value="150"></label>
     <label>記事上限／言語<input id="maxPages" type="number" min="1" value="2000"></label>
     <label>長文の基準（バイト）<input id="minLen" type="number" min="0" value="5000"></label>
-    <label>同時接続数<input id="conc" type="number" min="1" max="8" value="4"></label>
+    <label>同時接続数<input id="conc" type="number" min="1" max="8" value="3"></label>
+    <label>リクエスト上限（たどる段階）<input id="budget" type="number" min="10" value="1500"></label>
     <label>項目の言語数の上限<input id="maxItemLangs" type="number" min="2" value="30"></label>
     <label>関連率の基準（%）<input id="minRel" type="number" min="0" max="100" value="10"></label>
     <label>関連チェックの見本数<input id="sample" type="number" min="1" max="50" value="20"></label>
@@ -68,6 +69,7 @@ dl{margin:6px 0}dt{font-weight:600;margin-top:6px}dd{margin:0 0 0 1em;color:var(
     <label>表示する言語数（上位）<input id="topN" type="number" min="1" value="30"></label>
   </div>
   <label class="chk"><input id="relCheck" type="checkbox" checked> サブカテゴリの関連チェック（無関係なサブカテゴリをたどらない）</label>
+  <label class="chk"><input id="relDepth1" type="checkbox" checked> 関連チェックは1階層目のサブカテゴリだけ（軽い）</label>
   <label class="chk"><input id="useB" type="checkbox" checked> 合算方式（B）も計算する</label>
   <div class="btns">
     <button type="submit" id="go">実行</button>
@@ -89,10 +91,10 @@ dl{margin:6px 0}dt{font-weight:600;margin-top:6px}dd{margin:0 0 0 1em;color:var(
   <dt>B 英語版なし</dt><dd>B 範囲内のうち、英語版に記事がない数。</dd>
   <dt>A 走査</dt><dd>この言語版自身のカテゴリをたどって見つかった記事数（編集方針の影響を受ける）。</dd>
   <dt>A 長文</dt><dd>A 走査のうち、基準以上の長さの記事。漢字・かな・ハングルは基準×2、キリル文字などは×1.6で換算（ざっくり）。</dd>
-  <dt>打切り</dt><dd>カテゴリ数か記事数の上限に達し、途中で止めた。この言語版の数字は過小。</dd>
+  <dt>打切り</dt><dd>カテゴリ数・記事数・リクエスト数のいずれかの上限に達したか、一部のサブカテゴリの取得に失敗し、途中で止めた。この言語版の数字は過小。「失敗」は元のカテゴリ自体を取得できなかった言語版（他の言語版の処理は続く）。</dd>
   <dt>除外カテゴリ</dt><dd>関連チェックで除外したサブカテゴリの数。名前（日本語か英語のラベル付き）はログに出る。</dd>
 </dl>
-<p>関連チェック：サブカテゴリの記事から見本を取り、元のカテゴリの直下の記事（中核）と本文中のリンクで、どちら向きでもつながっている割合を出す。基準未満ならそのサブカテゴリは数えず、その下もたどらない。サブカテゴリと同名の記事は中核から外して判定する。見本には、見本にする最小の長さ未満の記事（リンクが少なく誤判定しやすい）と、一覧・用語集系の記事（リンクが多く偶然当たりやすい。タイトルの形で判定）を使わない。見本はタイトルから決まる疑似ランダムな順で選ぶ。関連率が基準以上でも、つながっている記事が最低本数に満たなければ除外する。見本にできる記事が最小記事数に満たないサブカテゴリは判定せず残す（その下のサブカテゴリは個別に判定される）。サブカテゴリ1つにつき問い合わせ2回。</p>
+<p>関連チェック：サブカテゴリの記事から見本を取り、元のカテゴリの直下の記事（中核）と本文中のリンクで、どちら向きでもつながっている割合を出す。基準未満ならそのサブカテゴリは数えず、その下もたどらない。サブカテゴリと同名の記事は中核から外して判定する。見本には、見本にする最小の長さ未満の記事（リンクが少なく誤判定しやすい）と、一覧・用語集系の記事（リンクが多く偶然当たりやすい。タイトルの形で判定）を使わない。見本はタイトルから決まる疑似ランダムな順で選ぶ。見本が10本以上のときは、関連率が基準以上でも、つながっている記事が最低本数に満たなければ除外する（10本未満では1本でよい）。最低本数に満たないまま通ったサブカテゴリは「関連が弱い」として、その記事は数えるが下位はたどらない。見本にできる記事が最小記事数に満たないサブカテゴリは判定せず残す（その下のサブカテゴリは個別に判定される）。サブカテゴリ1つにつき問い合わせ2回。</p>
 <p>セブアノ語・ワライ語・エジプトアラビア語は常に除外。</p>
 </details>
 <details id="logbox"><summary>ログ</summary>
@@ -130,11 +132,18 @@ const hash = s => { let h = 2166136261; for (const ch of s) { h ^= ch.codePointA
 let STOP = false, reqCount = 0, t0 = 0, phase = '', limit = null;
 let rows = new Map(), sortKey = 'B2', useBDone = false, showAll = false;
 
+// 同時実行数の制限。idle() で、実行中・待機中の処理がすべて終わるのを待てる
 function makeLimiter(n){
-  let active = 0; const q = [];
-  const pump = () => { while (active < n && q.length){ const t = q.shift(); active++; t.fn().then(t.res, t.rej).finally(() => { active--; pump(); }); } };
-  return fn => new Promise((res, rej) => { q.push({fn, res, rej}); pump(); });
+  let active = 0; const q = []; let waiters = [];
+  const check = () => { if (!active && !q.length){ waiters.forEach(w => w()); waiters = []; } };
+  const pump = () => { while (active < n && q.length){ const t = q.shift(); active++; t.fn().then(t.res, t.rej).finally(() => { active--; pump(); check(); }); } };
+  const run = fn => new Promise((res, rej) => { q.push({fn, res, rej}); pump(); });
+  run.idle = () => new Promise(r => { waiters.push(r); check(); });
+  return run;
 }
+// 問い合わせの開始間隔を空ける（全体で1秒あたりの件数を抑える）
+let nextSlot = 0;
+async function pace(ms){ const now = performance.now(); const wait = Math.max(0, nextSlot - now); nextSlot = Math.max(now, nextSlot) + ms; if (wait) await sleep(wait); }
 function log(s){ const el = $('#log'); el.textContent += s + '\n'; el.scrollTop = el.scrollHeight; }
 function status(s, err){ if (s !== undefined) phase = s; const st = $('#status'); st.className = err ? 'err' : ''; st.textContent = err ? s : `${phase}（リクエスト ${reqCount}件・${((performance.now()-t0)/1000).toFixed(0)}秒）`; }
 
@@ -145,25 +154,38 @@ async function api(host, params){
   const long = u.toString().length > 1800;
   const body = new URLSearchParams(u.searchParams); body.delete('origin');
   return limit(async () => {
-    for (let i = 0; i < 5; i++){
-      if (STOP) throw Object.assign(new Error('中断しました'), {fatal:true});
+    let lastErr = '';
+    for (let i = 0; i < 6; i++){
+      if (STOP) throw Object.assign(new Error('中断しました'), {fatal:true, stop:true});
       try {
+        await pace(PACE_MS);
+        if (STOP) throw Object.assign(new Error('中断しました'), {fatal:true, stop:true});
         const r = long ? await fetch(`https://${host}/w/api.php?origin=*`, {method:'POST', body}) : await fetch(u);
         reqCount++; status();
-        if (r.status === 429 || r.status >= 500){ await sleep(1000 * 2**i); continue; }
+        if (r.status === 429 || r.status >= 500){ lastErr = `HTTP ${r.status}`; await backoff(i, r.status === 429); continue; }
         const j = await r.json();
         if (j.error){
-          if (j.error.code === 'maxlag' || j.error.code === 'ratelimited'){ await sleep(1000 * 2**i); continue; }
+          if (j.error.code === 'maxlag' || j.error.code === 'ratelimited'){ lastErr = j.error.code; await backoff(i, true); continue; }
           throw Object.assign(new Error(`${host}: ${j.error.code} ${j.error.info}`), {fatal:true});
         }
         return j;
       } catch (e){
-        if (e.fatal || STOP || i === 4) throw e;
-        await sleep(1000 * 2**i);
+        if (e.fatal || STOP) throw e;
+        // 制限に引っかかった応答はCORSヘッダが付かずネットワークエラーに見えることがあるので、長めに待って再試行
+        lastErr = e.message;
+        if (i === 5) throw new Error(`${host}: 再試行の上限（${lastErr}）`);
+        await backoff(i, true);
       }
     }
-    throw new Error(host + ': 再試行の上限に達しました');
+    throw new Error(`${host}: 再試行の上限（${lastErr}）`);
   });
+}
+const PACE_MS = 80; // 問い合わせの最短間隔（全体で最大およそ12件/秒）
+// 再試行の待ち時間。制限系のエラーは全体の送信も一時的に遅らせる
+async function backoff(i, throttle){
+  const ms = 1000 * 2**i;
+  if (throttle) nextSlot = Math.max(nextSlot, performance.now() + ms / 2);
+  await sleep(ms);
 }
 
 async function resolveInput(s){
@@ -215,17 +237,19 @@ async function linkHits(host, sample, core){
 async function crawl(lang, root, o){
   const host = `${lang}.wikipedia.org`;
   const seen = new Set([root]); const pages = new Map(); let capped = false;
-  const rejected = []; let core = [];
+  const rejected = [], weak = []; let core = []; let errors = 0, lastErr = '';
   let frontier = [{title: root, qid: null}];
   for (let d = 0; d <= o.depth && frontier.length; d++){
     const next = [];
-    await Promise.all(frontier.map(async c => {
+    await Promise.all(frontier.map(async c => { try {
       if (pages.size >= o.maxPages){ capped = true; return; }
+      // 全体のリクエスト上限（たどる段階のみ）に達したら、それ以上は開かない
+      if (reqCount >= o.budget){ capped = true; return; }
       const m = await fetchMembers(host, c.title, o.maxPages);
       if (m.capped) capped = true;
       if (d === 0){
         core = m.arts.map(a => a.title);
-      } else if (o.relCheck){
+      } else if (o.relCheck && (d === 1 || !o.relDepth1) && reqCount < o.budget){
         // そのサブカテゴリと同名の記事は中核から外す（誤分類された親記事で関連ありと判定されるのを防ぐ）
         const name = c.title.replace(/^[^:]+:/, '');
         const coreUse = core.filter(t => t !== name).slice(0, 40);
@@ -237,9 +261,16 @@ async function crawl(lang, root, o){
           .slice(0, o.sample).map(a => a.title);
         // 判定に使える記事が少なすぎるサブカテゴリは判定しない（偶然リンクがないだけで除外されるのを防ぐ）
         const hits = sample.length >= o.minJudge ? await linkHits(host, sample, coreUse) : null;
-        if (hits !== null && (hits < o.minHits || hits / sample.length * 100 < o.minRel)){
+        // 最低本数の条件は見本が10本以上のときだけ（小さい見本では厳しすぎて関連のあるサブカテゴリまで落とすため）
+        const needHits = sample.length >= 10 ? o.minHits : 1;
+        if (hits !== null && (hits < needHits || hits / sample.length * 100 < o.minRel)){
           rejected.push({title: c.title, qid: c.qid, hits, n: sample.length, arts: m.arts.length, subs: m.subs.length});
           return;
+        }
+        // ヒット1本だけで通った場合は「弱い関連」：自分の記事は数えるが、その下はたどらない
+        if (hits !== null && hits < o.minHits && m.subs.length){
+          weak.push({title: c.title, qid: c.qid, hits, n: sample.length, arts: m.arts.length, subs: m.subs.length});
+          m.subs = [];
         }
       }
       for (const a of m.arts){
@@ -253,10 +284,14 @@ async function crawl(lang, root, o){
           if (seen.size < o.maxCats){ seen.add(s.title); next.push(s); } else capped = true;
         }
       }
-    }));
+    } catch (e){
+      // 中断以外のエラーは、そのカテゴリだけ飛ばして続ける（元のカテゴリで失敗したらこの言語は失敗扱い）
+      if (e.stop || d === 0) throw e;
+      errors++; lastErr = e.message; capped = true;
+    } }));
     frontier = next;
   }
-  return {pages, cats: seen.size, capped, rejected};
+  return {pages, cats: seen.size, capped, rejected, weak, errors, lastErr};
 }
 
 async function labelsFor(qids){
@@ -271,14 +306,17 @@ async function labelsFor(qids){
 async function getSitelinks(ids, siteFilter){ // siteFilter は現在未使用（常に全言語を取得して言語数を数える）
   const out = new Map(); const chunks = [];
   for (let i = 0; i < ids.length; i += 50) chunks.push(ids.slice(i, i + 50));
-  let done = 0;
+  let done = 0, failed = 0;
   await Promise.all(chunks.map(async c => {
     const params = {action:'wbgetentities', ids:c.join('|'), props:'sitelinks'};
     if (siteFilter) params.sitefilter = siteFilter.join('|');
-    const j = await api('www.wikidata.org', params);
-    for (const [id, e] of Object.entries(j.entities || {})) if (!('missing' in e)) out.set(id, e.sitelinks || {});
+    try {
+      const j = await api('www.wikidata.org', params);
+      for (const [id, e] of Object.entries(j.entities || {})) if (!('missing' in e)) out.set(id, e.sitelinks || {});
+    } catch (e){ if (e.stop) throw e; failed++; log('Wikidata取得エラー: ' + e.message); }
     done++; status(`Wikidataから言語情報を取得中 ${done}/${chunks.length}`);
   }));
+  if (failed) log(`Wikidataの取得に ${failed}/${chunks.length} 回失敗（その分の項目は数えていない）`);
   return out;
 }
 
@@ -315,7 +353,7 @@ function render(){
         const label = `${esc(r.lang)}${nm ? `<span class="nm">${esc(nm)}</span>` : ''}`;
         return `<td>${r.cat ? `<a href="https://${r.lang}.wikipedia.org/wiki/${encodeURIComponent(r.cat.replace(/ /g,'_'))}" target="_blank" rel="noopener" title="${esc(r.cat)}">${label}</a>` : label}</td>`;
       }
-      if (c.k === 'capped') return `<td>${r.capped ? '<span class="cap">打切り</span>' : ''}</td>`;
+      if (c.k === 'capped') return `<td>${r.err ? '<span class="cap">失敗</span>' : r.capped ? '<span class="cap">打切り</span>' : ''}</td>`;
       const v = r[c.k];
       const txt = v === undefined ? '–' : v.toLocaleString();
       if (c.k === sortKey && v) return `<td class="num bar"><span class="b" style="width:${(v / max * 100).toFixed(1)}%"></span><span class="v">${txt}</span></td>`;
@@ -332,7 +370,8 @@ async function run(){
   $('#go').disabled = true; $('#stop').disabled = false; $('#copy').disabled = true;
   const num = id => Math.max(0, parseInt($(id).value, 10) || 0);
   const o = {depth: num('#depth'), maxCats: Math.max(1, num('#maxCats')), maxPages: Math.max(1, num('#maxPages')), minLen: num('#minLen'), maxItemLangs: Math.max(2, num('#maxItemLangs')), useB: $('#useB').checked,
-    relCheck: $('#relCheck').checked, minRel: num('#minRel'), sample: Math.min(50, Math.max(1, num('#sample'))), minJudge: Math.max(1, num('#minJudge')), minHits: Math.max(1, num('#minHits')), stubLen: num('#stubLen')};
+    relCheck: $('#relCheck').checked, minRel: num('#minRel'), sample: Math.min(50, Math.max(1, num('#sample'))), minJudge: Math.max(1, num('#minJudge')), minHits: Math.max(1, num('#minHits')), stubLen: num('#stubLen'), budget: Math.max(10, num('#budget')), relDepth1: $('#relDepth1').checked};
+  nextSlot = 0;
   limit = makeLimiter(Math.min(8, Math.max(1, num('#conc'))));
   const timer = setInterval(() => status(), 1000);
   try {
@@ -357,24 +396,35 @@ async function run(){
 
     let done = 0;
     status(`各言語版をたどり中 0/${withCat.length}`);
+    // 1言語の失敗で全体を止めない。中断だけは全体を止める
     await Promise.all(withCat.map(async l => {
-      const r = await crawl(l, catByLang[l], o);
-      const row = rows.get(l); const vals = [...r.pages.values()];
-      row.A = r.pages.size;
-      row.Along = vals.filter(p => p.len >= o.minLen * lenFactor(l)).length;
-      row.cats = r.cats; row.capped = r.capped; row.rej = r.rejected.length; row.rejList = r.rejected;
-      row.qids = vals.map(p => p.qid).filter(Boolean);
+      const row = rows.get(l);
+      try {
+        const r = await crawl(l, catByLang[l], o);
+        const vals = [...r.pages.values()];
+        row.A = r.pages.size;
+        row.Along = vals.filter(p => p.len >= o.minLen * lenFactor(l)).length;
+        row.cats = r.cats; row.capped = r.capped; row.rej = r.rejected.length; row.rejList = r.rejected; row.weakList = r.weak;
+        row.qids = vals.map(p => p.qid).filter(Boolean);
+        log(`${l}: 記事 ${row.A} / カテゴリ ${row.cats}${r.rejected.length ? ` / 除外 ${r.rejected.length}` : ''}${r.errors ? ` / 取得失敗 ${r.errors}（${r.lastErr}）` : ''}${r.capped ? '（打切り）' : ''}`);
+      } catch (e){
+        if (e.stop) throw e;
+        row.err = e.message; log(`${l}: 失敗（${e.message}）`);
+      }
       done++; status(`各言語版をたどり中 ${done}/${withCat.length}`);
-      log(`${l}: 記事 ${row.A} / カテゴリ ${row.cats}${r.rejected.length ? ` / 除外 ${r.rejected.length}` : ''}${r.capped ? '（打切り）' : ''}`);
       render();
     }));
+    if (reqCount >= o.budget) log(`リクエスト上限（${o.budget}件）に達したため、たどるのを途中で止めた言語版があります`);
 
     const rejAll = [...rows.values()].flatMap(r => (r.rejList || []).map(x => ({...x, lang: r.lang})));
-    if (rejAll.length){
+    const weakAll = [...rows.values()].flatMap(r => (r.weakList || []).map(x => ({...x, lang: r.lang})));
+    if (rejAll.length || weakAll.length){
       let lab = new Map();
-      try { lab = await labelsFor(rejAll.map(x => x.qid)); } catch {}
+      try { lab = await labelsFor([...rejAll, ...weakAll].map(x => x.qid)); } catch {}
       // ⁨…⁩ で囲み、右から左の文字（アラビア文字など）が行全体の向きを崩さないようにする
-      log(`関連チェックで除外したサブカテゴリ: ${rejAll.length}件\n` + rejAll.map(x => `  ${x.lang}: ⁨${x.title}⁩${lab.get(x.qid) ? ` 〔⁨${lab.get(x.qid)}⁩〕` : ''}  関連 ${x.hits}/${x.n}（記事 ${x.arts}・下位 ${x.subs}）`).join('\n'));
+      const line = x => `  ${x.lang}: ⁨${x.title}⁩${lab.get(x.qid) ? ` 〔⁨${lab.get(x.qid)}⁩〕` : ''}  関連 ${x.hits}/${x.n}（記事 ${x.arts}・下位 ${x.subs}）`;
+      if (rejAll.length) log(`関連チェックで除外したサブカテゴリ: ${rejAll.length}件\n` + rejAll.map(line).join('\n'));
+      if (weakAll.length) log(`関連が弱いため、記事は数えたが下位はたどらなかったサブカテゴリ: ${weakAll.length}件\n` + weakAll.map(line).join('\n'));
     }
 
     if (o.useB && inp.qid){
@@ -421,9 +471,14 @@ async function run(){
       for (const r of rows.values()) r.Blong = 0;
       let jd = 0;
       await Promise.all(jobs.map(async ({l, ts}) => {
-        const j = await api(`${l}.wikipedia.org`, {action:'query', titles: ts.join('|'), prop:'info'});
-        const th = o.minLen * lenFactor(l);
-        for (const p of (j.query?.pages || [])) if (!p.missing && (p.length || 0) >= th) rows.get(l).Blong++;
+        try {
+          const j = await api(`${l}.wikipedia.org`, {action:'query', titles: ts.join('|'), prop:'info'});
+          const th = o.minLen * lenFactor(l);
+          for (const p of (j.query?.pages || [])) if (!p.missing && (p.length || 0) >= th) rows.get(l).Blong++;
+        } catch (e){
+          if (e.stop) throw e;
+          rows.get(l).BlongErr = true; log(`${l}: 記事の長さの取得に失敗（B 長文は過小）: ${e.message}`);
+        }
         jd++; status(`記事の長さを取得中 ${jd}/${jobs.length}`);
       }));
 
@@ -440,8 +495,12 @@ async function run(){
     $('#copy').disabled = false;
   } catch (e){
     status('エラー: ' + e.message, true); log('エラー: ' + e.message);
+    // 裏で残っている処理も止める
+    STOP = true;
     if (rows.size){ render(); $('#copy').disabled = false; }
   } finally {
+    // 実行中・待機中の問い合わせがすべて終わるまで待ってから、ボタンを戻す
+    await limit.idle();
     clearInterval(timer);
     $('#go').disabled = false; $('#stop').disabled = true;
   }
