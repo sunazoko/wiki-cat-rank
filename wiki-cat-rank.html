@@ -1,0 +1,317 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Wikipedia カテゴリ言語ランキング</title>
+<style>
+:root{--bg:#fff;--fg:#1a1a1a;--mut:#666;--line:#ddd;--acc:#2f5bd3;--bar:#d6e1fb;--warn:#b5520b}
+@media (prefers-color-scheme:dark){:root{--bg:#161616;--fg:#eee;--mut:#9a9a9a;--line:#333;--acc:#8aa8ff;--bar:#273457;--warn:#f0a060}}
+*{box-sizing:border-box}
+body{font-family:system-ui,-apple-system,"Segoe UI","Hiragino Sans","Noto Sans JP",sans-serif;background:var(--bg);color:var(--fg);margin:0 auto;padding:16px;max-width:1100px;font-size:15px;line-height:1.5}
+h1{font-size:1.25rem;margin:0 0 4px}
+.note{color:var(--mut);margin:0 0 12px;font-size:.9rem}
+label{display:block;margin:8px 0;font-size:.9rem}
+input[type=text],input[type=number]{display:block;width:100%;padding:7px 8px;margin-top:3px;border:1px solid var(--line);border-radius:6px;background:transparent;color:var(--fg);font:inherit}
+.chk{display:flex;gap:6px;align-items:center}
+.grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(140px,1fr));gap:0 12px}
+.btns{display:flex;gap:8px;flex-wrap:wrap;margin:10px 0}
+button{padding:7px 14px;border-radius:6px;border:1px solid var(--line);background:transparent;color:var(--fg);font:inherit;cursor:pointer}
+button#go{background:var(--acc);border-color:var(--acc);color:#fff}
+button:disabled{opacity:.45;cursor:default}
+#status{color:var(--mut);font-size:.9rem;min-height:1.5em;margin:6px 0}
+#status.err{color:var(--warn)}
+.tablewrap{overflow-x:auto}
+table{border-collapse:collapse;width:100%;font-size:.88rem;font-variant-numeric:tabular-nums}
+th,td{padding:5px 8px;border-bottom:1px solid var(--line);text-align:left;white-space:nowrap}
+th.num,td.num{text-align:right}
+th.sortable{cursor:pointer;color:var(--acc)}
+th.active{text-decoration:underline}
+td.bar{position:relative}
+td.bar span.b{position:absolute;left:0;top:3px;bottom:3px;background:var(--bar);z-index:0;border-radius:2px}
+td.bar span.v{position:relative;z-index:1}
+td .nm{color:var(--mut);font-size:.8rem;margin-left:4px}
+.cap{color:var(--warn)}
+a{color:var(--acc)}
+details{margin-top:14px;font-size:.88rem}
+pre#log{white-space:pre-wrap;font-size:.8rem;color:var(--mut);max-height:320px;overflow:auto}
+dl{margin:6px 0}dt{font-weight:600;margin-top:6px}dd{margin:0 0 0 1em;color:var(--mut)}
+</style>
+</head>
+<body>
+<h1>Wikipedia カテゴリ言語ランキング</h1>
+<p class="note">カテゴリのURLを入れると、各言語版をたどって記事数を数え、多い順に並べます（試験版）。</p>
+
+<form id="f">
+  <label>カテゴリのURL（またはWikidataのQID）
+    <input id="url" type="text" required placeholder="https://en.wikipedia.org/wiki/Category:Open-source_intelligence">
+  </label>
+  <label>対象の言語コード（空白区切り）
+    <input id="langs" type="text" value="en de fr es it pt nl sv pl cs fi hu ru uk ja zh ko tr ar fa he et lv lt ro el">
+  </label>
+  <label class="chk"><input id="all" type="checkbox"> カテゴリがある全言語版を見る（重い）</label>
+  <div class="grid">
+    <label>深さ<input id="depth" type="number" min="0" max="5" value="2"></label>
+    <label>カテゴリ上限／言語<input id="maxCats" type="number" min="1" value="150"></label>
+    <label>記事上限／言語<input id="maxPages" type="number" min="1" value="2000"></label>
+    <label>長文の基準（バイト）<input id="minLen" type="number" min="0" value="5000"></label>
+    <label>同時接続数<input id="conc" type="number" min="1" max="8" value="4"></label>
+  </div>
+  <label class="chk"><input id="useB" type="checkbox" checked> 合算方式（B）も計算する</label>
+  <div class="btns">
+    <button type="submit" id="go">実行</button>
+    <button type="button" id="stop" disabled>中断</button>
+    <button type="button" id="copy" disabled>TSVをコピー</button>
+  </div>
+</form>
+
+<div id="status"></div>
+<div class="tablewrap"><table id="tbl"></table></div>
+
+<details><summary>各列の意味</summary>
+<dl>
+  <dt>B 2言語以上</dt><dd>B 合算のうち、対象言語の中で2言語以上に記事がある項目の数（その言語版にしかない超ローカル記事を除く）。全言語モードでは全Wikipedia中で2言語以上。</dd>
+  <dt>B 合算</dt><dd>全言語版のカテゴリ（指定の深さまで）に入っていた記事をWikidata項目として合わせ、そのうちこの言語版に記事がある数。この言語版でのカテゴリの付け方に左右されない。カテゴリがない言語版も数えられる。</dd>
+  <dt>B 英語版なし</dt><dd>B 合算のうち、英語版に記事がない数。</dd>
+  <dt>A 走査</dt><dd>この言語版自身のカテゴリをたどって見つかった記事数（編集方針の影響を受ける）。</dd>
+  <dt>A 長文</dt><dd>A 走査のうち、基準以上の長さの記事。漢字・かな・ハングルは基準×2、キリル文字などは×1.6で換算（ざっくり）。</dd>
+  <dt>打切り</dt><dd>カテゴリ数か記事数の上限に達し、途中で止めた。この言語版の数字は過小。</dd>
+</dl>
+<p>セブアノ語・ワライ語・エジプトアラビア語は常に除外。</p>
+</details>
+<details id="logbox"><summary>ログ</summary><pre id="log"></pre></details>
+
+<script>
+"use strict";
+const $ = s => document.querySelector(s);
+const EXCLUDE = new Set(['ceb','war','arz']);
+const SPECIAL_DB = new Set(['commonswiki','specieswiki','metawiki','mediawikiwiki','wikidatawiki','sourceswiki','outreachwiki','incubatorwiki','wikimaniawiki','wikifunctionswiki','foundationwiki','testwiki','test2wiki','testwikidatawiki','betawikiversity']);
+const CJK = new Set(['ja','zh','ko','zh-yue','wuu','zh-classical','gan']);
+const MULTI = new Set(['ru','uk','be','be-tarask','bg','sr','mk','kk','ky','tg','mn','el','he','yi','ar','fa','ur','ps','hy','ka','hi','mr','ne','bn','ta','te','ml','kn','th','my','km','lo','am']);
+const lenFactor = l => CJK.has(l) ? 2 : MULTI.has(l) ? 1.6 : 1;
+const langToDb = l => l === 'be-tarask' ? 'be_x_oldwiki' : l.replace(/-/g,'_') + 'wiki';
+const dbToLang = db => { const b = db.replace(/wiki$/,''); return b === 'be_x_old' ? 'be-tarask' : b.replace(/_/g,'-'); };
+const isWpDb = db => /wiki$/.test(db) && !SPECIAL_DB.has(db);
+let langName = c => '';
+try { const dn = new Intl.DisplayNames(['ja'], {type:'language'}); langName = c => { try { const n = dn.of(c); return n && n !== c ? n : ''; } catch { return ''; } }; } catch {}
+const esc = s => String(s).replace(/[&<>"]/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));
+const sleep = ms => new Promise(r => setTimeout(r, ms));
+
+let STOP = false, reqCount = 0, t0 = 0, phase = '', limit = null;
+let rows = new Map(), sortKey = 'B2', useBDone = false;
+
+function makeLimiter(n){
+  let active = 0; const q = [];
+  const pump = () => { while (active < n && q.length){ const t = q.shift(); active++; t.fn().then(t.res, t.rej).finally(() => { active--; pump(); }); } };
+  return fn => new Promise((res, rej) => { q.push({fn, res, rej}); pump(); });
+}
+function log(s){ const el = $('#log'); el.textContent += s + '\n'; el.scrollTop = el.scrollHeight; }
+function status(s, err){ if (s !== undefined) phase = s; const st = $('#status'); st.className = err ? 'err' : ''; st.textContent = err ? s : `${phase}（リクエスト ${reqCount}件・${((performance.now()-t0)/1000).toFixed(0)}秒）`; }
+
+async function api(host, params){
+  const u = new URL(`https://${host}/w/api.php`);
+  for (const [k,v] of Object.entries({...params, format:'json', formatversion:'2', origin:'*'})) u.searchParams.set(k, v);
+  return limit(async () => {
+    for (let i = 0; i < 5; i++){
+      if (STOP) throw Object.assign(new Error('中断しました'), {fatal:true});
+      try {
+        const r = await fetch(u);
+        reqCount++; status();
+        if (r.status === 429 || r.status >= 500){ await sleep(1000 * 2**i); continue; }
+        const j = await r.json();
+        if (j.error){
+          if (j.error.code === 'maxlag' || j.error.code === 'ratelimited'){ await sleep(1000 * 2**i); continue; }
+          throw Object.assign(new Error(`${host}: ${j.error.code} ${j.error.info}`), {fatal:true});
+        }
+        return j;
+      } catch (e){
+        if (e.fatal || STOP || i === 4) throw e;
+        await sleep(1000 * 2**i);
+      }
+    }
+    throw new Error(host + ': 再試行の上限に達しました');
+  });
+}
+
+async function resolveInput(s){
+  s = s.trim();
+  if (/^Q\d+$/i.test(s)) return {qid: s.toUpperCase()};
+  let u; try { u = new URL(s); } catch { throw new Error('URLかQIDを入力してください'); }
+  const m = u.hostname.match(/^([a-z0-9-]+)\.(?:m\.)?wikipedia\.org$/i);
+  if (!m) throw new Error('wikipedia.org のURLではありません');
+  const lang = m[1].toLowerCase();
+  let title = u.searchParams.get('title');
+  if (!title){ const pm = u.pathname.match(/^\/wiki\/(.+)$/); if (!pm) throw new Error('ページ名を読み取れません'); title = decodeURIComponent(pm[1]); }
+  title = title.replace(/_/g, ' ');
+  const j = await api(`${lang}.wikipedia.org`, {action:'query', titles:title, prop:'pageprops', ppprop:'wikibase_item', redirects:'1'});
+  const pg = j.query.pages[0];
+  if (pg.missing) throw new Error('ページが見つかりません: ' + title);
+  if (pg.ns !== 14) throw new Error('カテゴリのページではありません: ' + pg.title);
+  return {qid: pg.pageprops?.wikibase_item || null, lang, title: pg.title};
+}
+
+async function crawl(lang, root, o){
+  const host = `${lang}.wikipedia.org`;
+  const seen = new Set([root]); const pages = new Map(); let capped = false;
+  let frontier = [root];
+  for (let d = 0; d <= o.depth && frontier.length; d++){
+    const next = [];
+    await Promise.all(frontier.map(async cat => {
+      let cont = {};
+      while (true){
+        if (pages.size >= o.maxPages){ capped = true; break; }
+        const j = await api(host, {action:'query', generator:'categorymembers', gcmtitle:cat, gcmtype:'page|subcat', gcmnamespace:'0|14', gcmlimit:'max', prop:'info|pageprops', ppprop:'wikibase_item', ...cont});
+        for (const p of (j.query?.pages || [])){
+          if (p.ns === 14){
+            if (d < o.depth && !seen.has(p.title)){
+              if (seen.size < o.maxCats){ seen.add(p.title); next.push(p.title); } else capped = true;
+            }
+          } else if (p.ns === 0 && !p.redirect){
+            const prev = pages.get(p.pageid);
+            if (prev){ if (!prev.qid && p.pageprops?.wikibase_item) prev.qid = p.pageprops.wikibase_item; }
+            else if (pages.size < o.maxPages) pages.set(p.pageid, {len: p.length || 0, qid: p.pageprops?.wikibase_item || null});
+            else capped = true;
+          }
+        }
+        if (!j.continue) break;
+        cont = j.continue;
+      }
+    }));
+    frontier = next;
+  }
+  return {pages, cats: seen.size, capped};
+}
+
+async function getSitelinks(ids, siteFilter){
+  const out = new Map(); const chunks = [];
+  for (let i = 0; i < ids.length; i += 50) chunks.push(ids.slice(i, i + 50));
+  let done = 0;
+  await Promise.all(chunks.map(async c => {
+    const params = {action:'wbgetentities', ids:c.join('|'), props:'sitelinks'};
+    if (siteFilter) params.sitefilter = siteFilter.join('|');
+    const j = await api('www.wikidata.org', params);
+    for (const [id, e] of Object.entries(j.entities || {})) if (!('missing' in e)) out.set(id, e.sitelinks || {});
+    done++; status(`Wikidataから言語情報を取得中 ${done}/${chunks.length}`);
+  }));
+  return out;
+}
+
+const COLS = [
+  {k:'rank', h:'#'},
+  {k:'lang', h:'言語'},
+  {k:'B2', h:'B 2言語以上', num:true, b:true},
+  {k:'B', h:'B 合算', num:true, b:true},
+  {k:'Bne', h:'B 英語版なし', num:true, b:true},
+  {k:'A', h:'A 走査', num:true},
+  {k:'Along', h:'A 長文', num:true},
+  {k:'cats', h:'カテゴリ数', num:true},
+  {k:'capped', h:'打切り'},
+];
+function sorted(){ return [...rows.values()].sort((a,b) => (b[sortKey] ?? -1) - (a[sortKey] ?? -1) || a.lang.localeCompare(b.lang)); }
+function render(){
+  const cols = COLS.filter(c => !c.b || useBDone);
+  const list = sorted();
+  const max = Math.max(1, ...list.map(r => r[sortKey] || 0));
+  let h = '<thead><tr>' + cols.map(c => `<th class="${c.num ? 'num sortable' : ''}${c.k === sortKey ? ' active' : ''}" data-k="${c.k}">${c.h}</th>`).join('') + '</tr></thead><tbody>';
+  list.forEach((r, i) => {
+    h += '<tr>' + cols.map(c => {
+      if (c.k === 'rank') return `<td class="num">${i + 1}</td>`;
+      if (c.k === 'lang'){
+        const nm = langName(r.lang);
+        const label = `${esc(r.lang)}${nm ? `<span class="nm">${esc(nm)}</span>` : ''}`;
+        return `<td>${r.cat ? `<a href="https://${r.lang}.wikipedia.org/wiki/${encodeURIComponent(r.cat.replace(/ /g,'_'))}" target="_blank" rel="noopener" title="${esc(r.cat)}">${label}</a>` : label}</td>`;
+      }
+      if (c.k === 'capped') return `<td>${r.capped ? '<span class="cap">打切り</span>' : ''}</td>`;
+      const v = r[c.k];
+      const txt = v === undefined ? '–' : v.toLocaleString();
+      if (c.k === sortKey && v) return `<td class="num bar"><span class="b" style="width:${(v / max * 100).toFixed(1)}%"></span><span class="v">${txt}</span></td>`;
+      return `<td class="num">${txt}</td>`;
+    }).join('') + '</tr>';
+  });
+  $('#tbl').innerHTML = h + '</tbody>';
+  $('#tbl').querySelectorAll('th.sortable').forEach(th => th.onclick = () => { sortKey = th.dataset.k; render(); });
+}
+
+async function run(){
+  STOP = false; reqCount = 0; t0 = performance.now(); rows = new Map(); useBDone = false;
+  $('#log').textContent = ''; $('#tbl').innerHTML = '';
+  $('#go').disabled = true; $('#stop').disabled = false; $('#copy').disabled = true;
+  const num = id => Math.max(0, parseInt($(id).value, 10) || 0);
+  const o = {depth: num('#depth'), maxCats: Math.max(1, num('#maxCats')), maxPages: Math.max(1, num('#maxPages')), minLen: num('#minLen'), useB: $('#useB').checked};
+  limit = makeLimiter(Math.min(8, Math.max(1, num('#conc'))));
+  const timer = setInterval(() => status(), 1000);
+  try {
+    status('カテゴリを確認中');
+    const inp = await resolveInput($('#url').value);
+    const catByLang = {};
+    if (inp.qid){
+      const j = await api('www.wikidata.org', {action:'wbgetentities', ids:inp.qid, props:'sitelinks'});
+      for (const [db, v] of Object.entries(j.entities[inp.qid]?.sitelinks || {})) if (isWpDb(db)) catByLang[dbToLang(db)] = v.title;
+      log(`Wikidata: ${inp.qid} / カテゴリがある言語版: ${Object.keys(catByLang).length}`);
+    } else {
+      catByLang[inp.lang] = inp.title;
+      log('Wikidata項目がないため、入力した言語版のみを見ます');
+    }
+    const allMode = $('#all').checked || !inp.qid;
+    let langs = allMode ? Object.keys(catByLang) : [...new Set($('#langs').value.trim().toLowerCase().split(/[\s,]+/).filter(Boolean))];
+    langs = langs.filter(l => !EXCLUDE.has(l));
+    for (const l of langs) rows.set(l, {lang: l, cat: catByLang[l] || null});
+    const withCat = langs.filter(l => catByLang[l]);
+    log(`対象 ${langs.length}言語（うちカテゴリあり ${withCat.length}）`);
+    sortKey = 'A'; render();
+
+    let done = 0;
+    status(`各言語版をたどり中 0/${withCat.length}`);
+    await Promise.all(withCat.map(async l => {
+      const r = await crawl(l, catByLang[l], o);
+      const row = rows.get(l); const vals = [...r.pages.values()];
+      row.A = r.pages.size;
+      row.Along = vals.filter(p => p.len >= o.minLen * lenFactor(l)).length;
+      row.cats = r.cats; row.capped = r.capped;
+      row.qids = vals.map(p => p.qid).filter(Boolean);
+      done++; status(`各言語版をたどり中 ${done}/${withCat.length}`);
+      log(`${l}: 記事 ${row.A} / カテゴリ ${row.cats}${r.capped ? '（打切り）' : ''}`);
+      render();
+    }));
+
+    if (o.useB && inp.qid){
+      const union = new Set(); for (const r of rows.values()) (r.qids || []).forEach(q => union.add(q));
+      log(`合算した項目数: ${union.size}`);
+      const sl = await getSitelinks([...union], allMode ? null : langs.map(langToDb));
+      for (const r of rows.values()){ r.B = 0; r.B2 = 0; r.Bne = 0; }
+      for (const links of sl.values()){
+        const wp = Object.keys(links).filter(db => isWpDb(db) && !EXCLUDE.has(dbToLang(db)));
+        const n = wp.length, hasEn = !!links.enwiki;
+        for (const db of wp){
+          const r = rows.get(dbToLang(db)); if (!r) continue;
+          r.B++; if (n >= 2) r.B2++; if (!hasEn) r.Bne++;
+        }
+      }
+      useBDone = true; sortKey = 'B2';
+    }
+    render();
+    status(`完了`);
+    $('#copy').disabled = false;
+  } catch (e){
+    status('エラー: ' + e.message, true); log('エラー: ' + e.message);
+    if (rows.size){ render(); $('#copy').disabled = false; }
+  } finally {
+    clearInterval(timer);
+    $('#go').disabled = false; $('#stop').disabled = true;
+  }
+}
+
+$('#f').addEventListener('submit', e => { e.preventDefault(); run(); });
+$('#stop').onclick = () => { STOP = true; status('中断中…'); };
+$('#copy').onclick = async () => {
+  const cols = COLS.filter(c => !c.b || useBDone);
+  const lines = [cols.map(c => c.h).join('\t')];
+  sorted().forEach((r, i) => lines.push(cols.map(c => c.k === 'rank' ? i + 1 : c.k === 'capped' ? (r.capped ? '打切り' : '') : c.k === 'lang' ? r.lang : (r[c.k] ?? '')).join('\t')));
+  try { await navigator.clipboard.writeText(lines.join('\n')); $('#copy').textContent = 'コピーしました'; setTimeout(() => $('#copy').textContent = 'TSVをコピー', 1500); }
+  catch { status('クリップボードに書き込めませんでした', true); }
+};
+const qs = new URLSearchParams(location.search).get('cat');
+if (qs){ $('#url').value = qs; run(); }
+</script>
+</body>
+</html>
